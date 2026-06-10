@@ -66,8 +66,19 @@ function colOf(t){return t.cls==='rail'?(P['rail_'+(t.el||'none')]||P.ink):(COL[
 function wgtOf(t){return t.cls==='rail'?(t.br?WGT.rail_branch:WGT.rail):(WGT[t.cls]||1.4);}
 const TDASH={narrow_gauge:[6,1.5],construction:[3,3]};   // non-colour cues
 const TINK={subway:1,light_rail:1,tram:1,narrow_gauge:1,funicular:1,miniature:1,construction:1};
-function speedColor(m){if(m<=0)return"#b9ac8d";if(m<35)return"#c9a76a";if(m<50)return"#c98a4a";
-  if(m<65)return"#b86a35";if(m<80)return"#a14b27";if(m<95)return"#84321c";return"#6b2415";}
+const _shc={};   // SPEED SHADE (2026-06-10, Tyler: "ALWAYS do it, shading the
+// natural line color over a modest range"): rail ink only -- lighten up to
+// +14% toward paper for slow lines, darken -10% for fast; unknown = base.
+// tram/light_rail are NOT shaded (their inks fail 3:1 on sea if lightened).
+function shadeSpd(c,m){if(!m||m<=0)return c;
+  const b=Math.max(1,Math.min(8,Math.round(m/15)));const key=c+b;
+  if(_shc[key])return _shc[key];
+  const t=Math.max(0,Math.min(1,(b*15-15)/95));const f=0.14-0.24*t;
+  const h=(i)=>parseInt(c.slice(i,i+2),16);
+  const mix=(x)=>Math.max(0,Math.min(255,Math.round(f>=0?x+(255-x)*f:x*(1+f))));
+  const v='#'+((1<<24)+(mix(h(1))<<16)+(mix(h(3))<<8)+mix(h(5))).toString(16).slice(1);
+  _shc[key]=v;return v;}
+let wsc=1;  // stroke-width zoom scale (Tyler: "really thin when zoomed in")
 
 // ---------- spatial index (in-memory tile grid) for viewport culling -------
 function bboxOf(pts){let a=1e9,b=1e9,c=-1e9,d=-1e9;for(const p of pts){if(p[0]<a)a=p[0];if(p[1]<b)b=p[1];if(p[0]>c)c=p[0];if(p[1]>d)d=p[1];}return[a,b,c,d];}
@@ -224,7 +235,7 @@ let DPR=window.devicePixelRatio||1, SW=0, SH=0;
 let k=1, ox=0, oy=0;            // screen = world*k + o
 const VIEW=SCENE.view||[0,0,SCENE.width,SCENE.height];
 const flags={rail_none:1,rail_dc:1,rail_ac:1,ng:1,metro:1,constr:1,tunnel:1,lc:1,stn:1,plat:1,signals:0,
-             places:1,speed:0,relief:0,contour:0,urban:1,industry:1,former:1};
+             places:1,relief:0,contour:0,urban:1,industry:1,former:1};
 function flagOf(t){const c=t.cls;
   if(c==='rail')return flags['rail_'+(t.el||'none')];
   if(c==='subway'||c==='light_rail'||c==='tram')return flags.metro;
@@ -294,29 +305,33 @@ function drawTrack(t,offx,offy){
   for(const seg of trackSegs(t)){const sub=t.pts.slice(seg[0],seg[1]+1);if(sub.length<2)continue;
     moveCurve(sub,offx||0,offy||0);
     if(seg[2]){ // tunnel run: metro/overlay types keep their OWN ink, dashed
-      if(TINK[t.cls]){ctx.strokeStyle=colOf(t);ctx.lineWidth=wgtOf(t);}
-      else{ctx.strokeStyle=P.tunnel;ctx.lineWidth=WGT.tunnel;}
-      ctx.setLineDash([4.5,3]);}
-    else{ctx.strokeStyle=(flags.speed&&t.spdseg)?null:colOf(t);ctx.lineWidth=wgtOf(t);ctx.setLineDash(TDASH[t.cls]||[]);}
-    if(flags.speed&&!seg[2]&&t.spdseg){ // per-speed coloured sub-runs
-      drawSpeed(sub,t,seg[0]);continue;}
+      if(TINK[t.cls]){ctx.strokeStyle=colOf(t);ctx.lineWidth=wgtOf(t)*wsc;}
+      else{ctx.strokeStyle=P.tunnel;ctx.lineWidth=WGT.tunnel*wsc;}
+      ctx.setLineDash([4.5*wsc,3*wsc]);}
+    else{const bc=colOf(t);
+      ctx.strokeStyle=(t.cls==='rail')?shadeSpd(bc,t.spd):bc;
+      ctx.lineWidth=wgtOf(t)*wsc;
+      ctx.setLineDash((TDASH[t.cls]||[]).map(d=>d*wsc));}
+    if(!LQ&&!seg[2]&&t.cls==='rail'&&t.spdseg&&t.spdseg.length>1){
+      drawSpeed(sub,t,seg[0]);continue;} // per-speed SHADED sub-runs
     ctx.globalAlpha=(t.cls==='siding'||t.cls==='yard')?0.7:(t.cls==='construction'?0.45:1);ctx.stroke();ctx.globalAlpha=1;}
   ctx.setLineDash([]);
   // (platform-span overdraw dropped 2026-06-10 -- the station footprint
   // polygon replaced it; t.plat still feeds the hover popup)
 }
 function drawSpeed(sub,t,base){ // colour `sub` by t.spdseg, sub starts at index `base`
-  const sp=t.spdseg;ctx.lineWidth=wgtOf(t);ctx.setLineDash([]);
+  const sp=t.spdseg,bc=colOf(t);ctx.lineWidth=wgtOf(t)*wsc;ctx.setLineDash([]);
   let si=0;while(si+1<sp.length&&sp[si+1][0]<=base)si++;
   for(let i=0;i<sub.length-1;i++){const gi=base+i;while(si+1<sp.length&&sp[si+1][0]<=gi)si++;
     ctx.beginPath();ctx.moveTo(sx(sub[i][0]),sy(sub[i][1]));ctx.lineTo(sx(sub[i+1][0]),sy(sub[i+1][1]));
-    ctx.strokeStyle=speedColor(sp[si][1]);ctx.stroke();}
+    ctx.strokeStyle=shadeSpd(bc,sp[si][1]);ctx.stroke();}
 }
 
 // ---------- main render -----------------------------------------------------
 let lastN=0;
 function draw(){
   if(!SW){resize();return;}
+  wsc=Math.min(3.2,Math.max(1,Math.pow(k,0.45)));
   ctx.save();ctx.scale(DPR,DPR);
   ctx.clearRect(0,0,SW,SH);
   ctx.fillStyle=P.land;ctx.fillRect(0,0,SW,SH);
@@ -362,8 +377,9 @@ function draw(){
   // below everything live; extra-faint (ghosted) at overview zooms
   if(flags.former&&SCENE.former&&SCENE.former.length){
     const cf=gQuery(gFormer,wx0,wy0,wx1,wy1,new Set());
-    ctx.strokeStyle=P.former;ctx.lineWidth=1.1;ctx.setLineDash([2,2.6]);
-    ctx.globalAlpha=k>=0.5?0.55:0.22;
+    ctx.strokeStyle=P.former;ctx.lineWidth=1.45*wsc;
+    ctx.setLineDash([2*wsc,2.6*wsc]);
+    ctx.globalAlpha=k>=0.5?0.75:0.35;
     for(const i of cf){const f=SCENE.former[i];if(!visible(f._bb))continue;
       moveCurve(f.pts,0,0);ctx.stroke();drawn++;}
     ctx.setLineDash([]);ctx.globalAlpha=1;}
@@ -676,7 +692,7 @@ addGroup('Layers',[['rail_none','Non-electrified',P.rail_none],['rail_dc','DC el
   ['plat','Platforms',P.platform],
   ['signals','Signals',P.red],
   ['former','Former lines',P.former,1],
-  ['places','Place labels',P.label_sub],['speed','Colour by line speed','#b86a35']]);
+  ['places','Place labels',P.label_sub]]);
 addGroup('Terrain & context',[['urban','Urban areas',P.urban],['industry','Industry labels',P.label_sub],['relief','Shaded relief',P.biome_heath],['contour','Contours · 50 ft',P.contour_index]]);
 
 function loadRelief(){if(!SCENE.topo||!SCENE.topo.img)return;const im=new Image();im.onload=()=>{reliefImg=im;draw();};im.src=SCENE.topo.img;}
