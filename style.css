@@ -42,7 +42,7 @@ body{
   border:1.5px solid var(--ink); border-radius:8px;
   background:#fff; color:var(--ink); font:inherit;
 }
-#search::placeholder{color:#8c8270}
+#search::placeholder{color:var(--sub)} /* was #8c8270: 3.79:1 on #fff, fails 1.4.3 */
 #results{
   position:absolute; left:0; right:0; top:calc(var(--ctl-h) + 4px);
   margin:0; padding:4px; list-style:none;

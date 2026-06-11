@@ -48,15 +48,23 @@ const flags = {
   former: 1, places: 1, urban: 1, industry: 1, junctions: 1,
 };
 const FLAGKEYS = Object.keys(flags);
-/* Yards are EITHER a shaded footprint OR their tracks, never both (Tyler).
-   auto = shaded wash zoomed out, real fanned tracks + outline once close. */
+/* Yards CROSSFADE between a shaded footprint and their real tracks (was a
+   hard switch at k=2.2). Over k = YARD_K1..YARD_K2 the wash alpha eases
+   1->0 while yard-track ink eases 0->1; the dashed survey outline fades in
+   with the tracks and persists. shade/tracks modes pin either end. */
 let yardMode = "auto";              // auto | shade | tracks | none
-const YARD_K = 2.2;                 // auto switchover zoom
+const YARD_K1 = 1.8, YARD_K2 = 2.6; // auto crossfade band
+const YARD_HATCH_S = 4;             // atlas-hatch spacing, screen px (perp.)
 let yShadeNow = true, yTracksNow = false, yOutlineNow = false;
+let yWashA = 1, yTrackA = 0;        // band alphas
 function yardFrame() {
-  yShadeNow = yardMode === "shade" || (yardMode === "auto" && k < YARD_K);
-  yTracksNow = yardMode === "tracks" || (yardMode === "auto" && k >= YARD_K);
-  yOutlineNow = yardMode === "auto" && k >= YARD_K;   // keep the outline+name
+  const t = Math.min(1, Math.max(0, (k - YARD_K1) / (YARD_K2 - YARD_K1)));
+  const s = t * t * (3 - 2 * t);    // smoothstep
+  yWashA = yardMode === "shade" ? 1 : yardMode === "auto" ? 1 - s : 0;
+  yTrackA = yardMode === "tracks" ? 1 : yardMode === "auto" ? s : 0;
+  yShadeNow = yWashA > 0.004;
+  yTracksNow = yTrackA > 0.004;
+  yOutlineNow = yardMode === "auto" && yTrackA > 0.004;  // outline + name persist
 }
 
 const sx = (x) => x * k + ox, sy = (y) => y * k + oy;
@@ -157,12 +165,13 @@ function pump() {
     fetch("tiles/0/" + kk + ".json")
       .then((r) => { if (!r.ok) throw 0; return r.json(); })
       .then((d) => { if (tileCache.get(kk) === e) { e.st = 1; e.data = d; detDirty = true; schedule(); } })
-      .catch(() => { if (tileCache.get(kk) === e) { e.st = 2; e.req = 0; } })
+      .catch(() => { if (tileCache.get(kk) === e) {
+        e.st = 2; e.terr = performance.now(); e.req = 0; } })
       .finally(() => { inflight--; pump(); tileSpin(); });
   }
   tileSpin();
 }
-let detDirty = false;
+let detDirty = false, detLast = 0, detTimer = 0;
 function rebuildDET() {
   DET = newDET();
   for (const e of tileCache.values()) if (e.st === 1) detAdd(DET, e.data);
@@ -197,18 +206,22 @@ function useOverview() {
     bridges: [], industry: [], abutments: [], portals: [] };
   PLACES = S.places;
 }
-let POINTS = {}, PLACES = [];
+let POINTS = {}, PLACES = [], LOVT = null;
 function bundleSync() {
   if (!BM) return;
   const want = k >= (BM.k_detail || 0.25);
   if (want) {
     const need = tilesInView(1);
+    const now = performance.now();
     allLoaded = true;
     for (const kk of need) {
       let e = tileCache.get(kk);
       if (!e) { tileCache.set(kk, e = { st: 0, req: 0 }); fq.push(kk); }
+      else if (e.st === 2 && !e.req && now - (e.terr || 0) > 4000) {
+        e.st = 0; fq.push(kk);                            // retry failures
+      }
       if (e.st !== 1) allLoaded = false;
-      else e.t = performance.now();
+      else e.t = now;
     }
     pump();
     if (tileCache.size > CACHE_MAX) {                       // LRU eviction
@@ -220,7 +233,12 @@ function bundleSync() {
         tileCache.delete(ev.shift()[0]); detDirty = true;
       }
     }
-    if (!BMODE || detDirty) { rebuildDET(); BMODE = true; detDirty = false; }
+    if (!BMODE) { BMODE = true; rebuildDET(); detDirty = false; detLast = now; }
+    else if (detDirty && (allLoaded || now - detLast > 150)) {
+      rebuildDET(); detDirty = false; detLast = now;      // batch arrivals:
+    } else if (detDirty && !detTimer) {                   // <=1 rebuild/150ms
+      detTimer = setTimeout(() => { detTimer = 0; schedule(); }, 160);
+    }
   } else if (BMODE) {
     BMODE = false; useOverview();
   }
@@ -428,9 +446,125 @@ function drawLeaderOp(stroke, w1, x1, y1, x2, y2) {
 function replayLabels() {
   for (const op of LBC) {
     if (op[0] === 0) drawTextOp(op[1], op[2], op[3], op[4], sx(op[5]) + op[7], sy(op[6]) + op[8], op[9]);
+    else if (op[0] === 2) drawYardNameOp(op[1], op[2], op[3], op[4], sx(op[5]), sy(op[6]));
     else drawLeaderOp(op[1], op[2], sx(op[3]) + op[5], sy(op[4]) + op[6], sx(op[7]) + op[9], sy(op[8]) + op[10]);
   }
 }
+
+/*YARDX-TYPE-START*/
+/* ---------------- yard-name typography (vintage small caps) ----------
+   Letterspaced SMALL CAPS drawn per glyph: canvas letterSpacing /
+   fontVariantCaps are not portable (no Firefox support), so glyphs are
+   laid out manually — which also gives true two-pass halos (all strokes
+   first, then all fills) so one glyph's halo never eats its neighbour. */
+const YN_TRK = 0.16, YN_SC = 0.78, YN_MIN = 7.5, YN_MAX = 13, YN_LEAD = 1.3;
+const YN_ABBR = [[/Sidings/, "Sdgs"], [/Siding/, "Sdg"],
+                 [/Carriage/, "Cge"], [/Junction/, "Jn"]];
+function ynChars(text, fs) {
+  const out = [];
+  for (const ch of text) {
+    const lc = ch !== ch.toUpperCase();
+    out.push([lc ? ch.toUpperCase() : ch, lc ? fs * YN_SC : fs]);
+  }
+  return out;
+}
+function ynWidth(text, fs) {
+  let w = 0;
+  for (const g of ynChars(text, fs)) {
+    ctx.font = "400 " + g[1] + "px Georgia,serif";
+    w += ctx.measureText(g[0]).width + YN_TRK * fs;
+  }
+  return w - YN_TRK * fs;
+}
+function drawYardNameOp(fs, fill, halo, lines, X, Y) {
+  ctx.textAlign = "left"; ctx.lineJoin = "round";
+  for (const haloPass of [1, 0]) for (let li = 0; li < lines.length; li++) {
+    const y = Y + (li - (lines.length - 1) / 2) * YN_LEAD * fs + fs * 0.35;
+    let x = X - ynWidth(lines[li], fs) / 2;
+    for (const g of ynChars(lines[li], fs)) {
+      ctx.font = "400 " + g[1] + "px Georgia,serif";
+      if (haloPass) { ctx.lineWidth = 3; ctx.strokeStyle = halo; ctx.strokeText(g[0], x, y); }
+      else { ctx.fillStyle = fill; ctx.fillText(g[0], x, y); }
+      x += ctx.measureText(g[0]).width + YN_TRK * fs;
+    }
+  }
+}
+function recYardName(fs, fill, halo, lines, wxp, wyp) {
+  LBC.push([2, fs, fill, halo, lines, wxp, wyp]);
+  drawYardNameOp(fs, fill, halo, lines, sx(wxp), sy(wyp));
+}
+function ynChordAt(ring, Yw) {           // widest interior chord at world y
+  const xs = [];
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length];
+    if ((a[1] <= Yw && Yw < b[1]) || (b[1] <= Yw && Yw < a[1]))
+      xs.push(a[0] + (Yw - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+  }
+  xs.sort((p, q) => p - q);
+  let w = 0, cx2 = 0;
+  for (let i = 0; i + 1 < xs.length; i += 2)
+    if (xs[i + 1] - xs[i] > w) { w = xs[i + 1] - xs[i]; cx2 = (xs[i] + xs[i + 1]) / 2; }
+  return w > 0 ? [w, cx2] : null;
+}
+function ynSplit(name) {                 // 2-line split minimizing the wider line
+  const words = name.split(" ");
+  if (words.length < 2) return null;
+  let best = null, bw = 1e18;
+  for (let i = 1; i < words.length; i++) {
+    const a = words.slice(0, i).join(" "), b = words.slice(i).join(" ");
+    const w = Math.max(ynWidth(a, 10), ynWidth(b, 10));
+    if (w < bw) { bw = w; best = [a, b]; }
+  }
+  return best;
+}
+function ringAreaYN(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i], q = ring[(i + 1) % ring.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+function yardNameLayout(f) {
+  // best inset layout: scan 9 horizontal chords through the poly, fit a
+  // single line (1.15 score bonus) or a two-line wrap; abbreviate last.
+  const ring = f.rings.reduce((a, b) => (b.length > a.length ? b : a), f.rings[0]);
+  const y0w = f._bb[1], bhw = f._bb[3] - f._bb[1];
+  const attempt = (name) => {
+    const u1 = ynWidth(name, 10) / 10;
+    const sp = ynSplit(name);
+    const u2 = sp ? Math.max(ynWidth(sp[0], 10), ynWidth(sp[1], 10)) / 10 : 0;
+    let best = null;
+    for (let i = 0; i < 9; i++) {
+      const Yw = y0w + bhw * (0.22 + 0.56 * i / 8);
+      const ch = ynChordAt(ring, Yw);
+      if (!ch) continue;
+      const cw = ch[0] * k;
+      const fs = Math.min(YN_MAX, cw * 0.88 / u1);
+      if (fs >= YN_MIN && (!best || fs * 1.15 > best.sc))
+        best = { sc: fs * 1.15, lines: [name], fs, X: sx(ch[1]), Y: sy(Yw) };
+      if (sp) {
+        let fs2 = Math.min(YN_MAX, cw * 0.88 / u2);
+        if (fs2 >= YN_MIN && (1 + YN_LEAD) * fs2 <= bhw * k * 0.9) {
+          const ca = ynChordAt(ring, Yw - YN_LEAD * fs2 / 2 / k),
+                cb = ynChordAt(ring, Yw + YN_LEAD * fs2 / 2 / k);
+          if (ca && cb) fs2 = Math.min(fs2, Math.min(ca[0], cb[0]) * k * 0.88 / u2);
+          if (fs2 >= YN_MIN && (!best || fs2 > best.sc))
+            best = { sc: fs2, lines: sp, fs: fs2, X: sx(ch[1]), Y: sy(Yw) };
+        }
+      }
+    }
+    return best;
+  };
+  let got = attempt(f.name);
+  if (!got) {
+    let t = f.name;
+    for (const ab of YN_ABBR) t = t.replace(ab[0], ab[1]);
+    if (t !== f.name) got = attempt(t);
+  }
+  return got;
+}
+/*YARDX-TYPE-END*/
 
 /* ---------------- the frame ---------------- */
 function draw() {
@@ -471,15 +605,89 @@ function draw() {
     const f = L.water.arr[i]; if (!visible(f._bb)) continue;
     ctx.beginPath(); pathStraight(f.pts); ctx.closePath(); ctx.fill();
   }
-  // yard footprints: filled wash (shade mode) or outline only (auto, zoomed)
-  if (yShadeNow || yOutlineNow) for (const i of L.yard_polys.g.query(vx0, vy0, vx1, vy1)) {
-    const f = L.yard_polys.arr[i]; if (!visible(f._bb)) continue;
-    fillRings(f.rings);
-    if (yShadeNow) { ctx.fillStyle = P.yard_poly || "#d5cfa6"; ctx.fill("evenodd"); }
-    ctx.strokeStyle = P.yard_poly_edge || "#a89a6e";
-    ctx.lineWidth = (yShadeNow ? 0.6 : 0.9) * wsc;
-    if (!yShadeNow) ctx.setLineDash([4, 3]);
-    ctx.stroke(); ctx.setLineDash([]);
+  // yard footprints (YARDX compose 2026-06-10): atlas hatch + ghost fan
+  // riding the crossfade band. Per poly, bottom-to-top:
+  //   1. whisper wash underlay (0.22 of the old flat fill)        x yWashA
+  //   2. GHOSTROADS: member yard lanes, siding ink at 0.18        x yWashA
+  //   3. 45-deg "/" hatch, world-phase-locked, clipped to poly    x yWashA
+  //   4. solid edge ink                                           x yWashA
+  // so the whole shade package fades OUT over the band, while the dashed
+  // survey outline fades IN with yTrackA and persists in tracks mode.
+  if (yShadeNow || yOutlineNow) {
+    const ghostSeen = new Set();   // GHOSTROADS: draw each lane once
+    for (const i of L.yard_polys.g.query(vx0, vy0, vx1, vy1)) {
+      const f = L.yard_polys.arr[i]; if (!visible(f._bb)) continue;
+      ctx.strokeStyle = P.yard_poly_edge || "#a89a6e";
+      if (yShadeNow) {
+        // 1. whisper underlay
+        fillRings(f.rings);
+        ctx.fillStyle = P.yard_poly || "#d5cfa6";
+        ctx.globalAlpha = 0.22 * yWashA; ctx.fill("evenodd");
+        // 2. the hidden fan whispers through the wash: every member yard
+        // lane in siding ink, above the wash, below the hatch and all
+        // live ink. Members: yard-class tracks whose mid vertex lies
+        // inside the poly bbox (+2 px pad); cached until tiles change.
+        if (k >= 0.35) {
+          if (!f._ghost || f._ghostN !== L.tracks.arr.length) {
+            f._ghostN = L.tracks.arr.length;
+            f._ghost = [];
+            const bb = f._bb, pad = 2;
+            for (const j of L.tracks.g.query(bb[0], bb[1], bb[2], bb[3])) {
+              const t = L.tracks.arr[j];
+              if (t.cls !== "yard" || t.pts.length < 2) continue;
+              if (t._bb[2] < bb[0] || t._bb[0] > bb[2] ||
+                  t._bb[3] < bb[1] || t._bb[1] > bb[3]) continue;
+              const m = t.pts[t.pts.length >> 1];
+              if (m[0] < bb[0] - pad || m[0] > bb[2] + pad ||
+                  m[1] < bb[1] - pad || m[1] > bb[3] + pad) continue;
+              f._ghost.push(t);
+            }
+          }
+          if (f._ghost.length) {
+            ctx.strokeStyle = P.siding || "#5e5743";
+            ctx.lineWidth = (WID.yard || 0.55) * wsc;
+            ctx.globalAlpha = 0.18 * yWashA;
+            for (const t of f._ghost) {
+              if (ghostSeen.has(t)) continue;
+              ghostSeen.add(t);
+              ctx.beginPath(); pathCurve(t.pts); ctx.stroke();
+            }
+            ctx.strokeStyle = P.yard_poly_edge || "#a89a6e";
+          }
+        }
+        // 3. atlas hatch: lines x+y=c clipped to the poly, spaced
+        // YARD_HATCH_S px (perp.) in screen space, phase-locked to the
+        // world origin via (ox+oy) so the texture pins while panning.
+        ctx.save();
+        fillRings(f.rings); ctx.clip("evenodd");
+        const s = YARD_HATCH_S * Math.SQRT2;   // c-step for "/" lines x+y=c
+        const hx0 = sx(f._bb[0]) - 1, hy0 = sy(f._bb[1]) - 1,
+              hx1 = sx(f._bb[2]) + 1, hy1 = sy(f._bb[3]) + 1;
+        const ph = (ox + oy) % s;
+        ctx.beginPath();
+        for (let c = Math.floor((hx0 + hy0 - ph) / s) * s + ph;
+             c <= hx1 + hy1; c += s) {
+          const ax = Math.max(hx0, c - hy1), bx = Math.min(hx1, c - hy0);
+          if (ax > bx) continue;
+          ctx.moveTo(ax, c - ax); ctx.lineTo(bx, c - bx);
+        }
+        ctx.globalAlpha = yWashA;
+        ctx.lineWidth = 0.6 * wsc;
+        ctx.stroke();
+        ctx.restore();
+        // 4. solid edge (clip consumed the screen path -- rebuild)
+        fillRings(f.rings);
+        ctx.globalAlpha = yWashA;
+        ctx.lineWidth = 0.6 * wsc; ctx.stroke();
+      }
+      if (yOutlineNow) {
+        if (!yShadeNow) fillRings(f.rings);
+        ctx.globalAlpha = yTrackA;
+        ctx.lineWidth = 0.9 * wsc;
+        ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
+      }
+      ctx.globalAlpha = 1;
+    }
   }
   // station footprints
   if (flags.plat) for (const i of L.station_polys.g.query(vx0, vy0, vx1, vy1)) {
@@ -514,6 +722,21 @@ function draw() {
     }
     ctx.setLineDash([]); ctx.globalAlpha = 1;
   }
+  // overview running lines kept underneath while detail tiles stream in
+  if (BMODE && !allLoaded) {
+    if (!LOVT) {
+      LOVT = Layer(); LOVT.arr = S.tracks;
+      S.tracks.forEach((f, i) => { f._bb = f._bb || bboxOf(f.pts); LOVT.g.add(f._bb, i); });
+    }
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    for (const i of LOVT.g.query(vx0, vy0, vx1, vy1)) {
+      const t = LOVT.arr[i];
+      if (!visible(t._bb) || !flagOf(t)) continue;
+      ctx.lineWidth = (WID[t.cls] !== undefined ? WID[t.cls] : 1.0) * wsc;
+      ctx.strokeStyle = clsInk(t);
+      ctx.beginPath(); pathStraight(t.pts); ctx.stroke();
+    }
+  }
   // tracks, class-ordered
   {
     const tt = [...L.tracks.g.query(vx0, vy0, vx1, vy1)]
@@ -531,6 +754,7 @@ function draw() {
       if (t.cls === "narrow_gauge") dash = [6 * wsc, 1.5 * wsc];
       else if (t.cls === "construction") { dash = [3 * wsc, 3 * wsc]; alpha = 0.45; }
       else if (t.cls === "tunnel") dash = [3.2 * wsc, 2.4 * wsc];
+      if (t.cls === "yard") alpha *= yTrackA;   // fade in across the band
       if (dash) ctx.setLineDash(dash);
       ctx.globalAlpha = alpha;
       // tunnel runs inside a normal track dash in the SAME ink
@@ -604,36 +828,78 @@ function drawLabels() {
     const f = L.station_polys.arr[i];
     if (visible(f._bb)) markRings(f.rings);
   }
-  // yard names (before stations so big names sit inside their wash)
+  // yard names — vintage letterspaced SMALL CAPS (before stations so the
+  // big names sit inside their wash). One label per name (largest visible
+  // poly), anchored on the widest interior chord; two-line wrap, then
+  // abbreviation, before giving up. While the wash fades (k < YARD_K2) the
+  // name stays inset; once yard tracks are fully on it becomes a
+  // placer-managed label with a leader.
   if ((yShadeNow || yOutlineNow) && k > 0.45) {
+    const ynSeen = new Map();
     for (const i of L.yard_polys.g.query(vx0, vy0, vx1, vy1)) {
       const f = L.yard_polys.arr[i];
       if (!f.name || !visible(f._bb)) continue;
-      const bx0 = sx(f._bb[0]), by0 = sy(f._bb[1]), bx1 = sx(f._bb[2]), by1 = sy(f._bb[3]);
-      const bw = bx1 - bx0, bh = by1 - by0;
-      const fs = Math.max(8, Math.min(12, bw * 0.06, bh * 0.45));
-      const font = "italic 600 " + fs + "px Georgia,serif";
-      ctx.font = font;
-      const w = ctx.measureText(f.name).width;
-      if (w > bw * 0.95) continue;
-      const cx2 = (bx0 + bx1) / 2, cy2 = (by0 + by1) / 2;
-      recText(font, P.label_sub || "#6b6353", P.yard_poly || "#d5cfa6",
-        f.name, wx(cx2), wy(cy2 - fs * 0.35), 0, fs * 0.7, "center");
-      markSeg(cx2 - w / 2, cy2, cx2 + w / 2, cy2);
+      const ring = f.rings.reduce((a, b) => (b.length > a.length ? b : a), f.rings[0]);
+      const ar = ringAreaYN(ring);
+      const cur = ynSeen.get(f.name);
+      if (!cur || ar > cur.ar) ynSeen.set(f.name, { f, ar });
+    }
+    const ynInk = P.label_sub || "#6b6353";
+    for (const { f } of ynSeen.values()) {
+      if (yTrackA < 1) {                       // inset on the wash
+        const lay = yardNameLayout(f);
+        if (!lay) continue;
+        // YARDX-HATCH merge: halo in land cream (flat wash is gone and the
+        // hatch is busier; cream reads cleanly over hatch + ghosts)
+        recYardName(lay.fs, ynInk, P.land || "#f1e9d4",
+          lay.lines, wx(lay.X), wy(lay.Y));
+        for (let li = 0; li < lay.lines.length; li++) {
+          const w2 = ynWidth(lay.lines[li], lay.fs);
+          const yy = lay.Y + (li - (lay.lines.length - 1) / 2) * YN_LEAD * lay.fs;
+          markSeg(lay.X - w2 / 2, yy, lay.X + w2 / 2, yy);
+        }
+      } else {                                 // tracks fully on: placer + leader
+        const X = sx((f._bb[0] + f._bb[2]) / 2), Y = sy((f._bb[1] + f._bb[3]) / 2);
+        if (X < -80 || X > SW + 80 || Y < -80 || Y > SH + 80) continue;
+        const fs = Math.max(9, Math.min(11.5, (f._bb[2] - f._bb[0]) * k * 0.05));
+        const w = ynWidth(f.name, fs), h = fs + 4;
+        const box = place(X, Y, w, h, cands(w, h, [10, 16, 24, 34, 46, 60]));
+        if (!box) continue;
+        const nx = Math.max(box[0], Math.min(X, box[0] + w)),
+              ny = Math.max(box[1], Math.min(Y, box[1] + h));
+        if (Math.hypot(nx - X, ny - Y) > 13)
+          recLeader(ynInk, 0.7, wx(X), wy(Y), 0, 0, wx(nx), wy(ny), 0, 0);
+        recYardName(fs, ynInk, P.land || "#f1e9d4",
+          [f.name], wx(box[0] + w / 2), wy(box[1] + h / 2));
+      }
     }
   }
-  // station labels — ALWAYS place (r3), never on a footprint
-  if (flags.stn && k > 0.5) {
+  // station labels — ranked by ORR ridership (SPEC orr_usage 2026-06-10):
+  // use-DESC placement order keeps the important ones when space runs out;
+  // zoom-banded eligibility unclutters London; must-place only when close.
+  if (flags.stn && k > 0.42) {
+    const USE_DEFAULT = 100000;
+    const USE_BANDS = [[0.55, 10000000], [0.85, 2000000], [1.3, 250000]];
+    const MUST_K = 1.6;
+    const useOf = (s) => (s.use > 0 ? s.use : USE_DEFAULT);
+    const useShow = (s) => {
+      const u = useOf(s);
+      for (const [kb, mu] of USE_BANDS) if (k < kb) return u >= mu;
+      return true;
+    };
+    if (!S._stByUse) S._stByUse = [...S.stations].sort((a, b) =>
+      (useOf(b) - useOf(a)) || ((a.halt ? 1 : 0) - (b.halt ? 1 : 0)) ||
+      ((b.crs ? 1 : 0) - (a.crs ? 1 : 0)));
     const fs = 11;
     const font = "600 " + fs + "px Georgia,serif";
     ctx.font = font;
-    for (const s of S.stations) {
+    for (const s of S._stByUse) {
       const X = sx(s.x), Y = sy(s.y);
       if (X < -80 || X > SW + 80 || Y < -80 || Y > SH + 80) continue;
-      if (!s.halt || k > 0.8) {
+      if (useShow(s)) {
         const w = ctx.measureText(s.name).width, h = fs + 3;
         const box = place(X, Y, w, h,
-          cands(w, h, [9, 15, 23, 33, 45, 60, 78, 98, 120]), true);
+          cands(w, h, [9, 15, 23, 33, 45, 60, 78, 98, 120]), k >= MUST_K);
         if (!box) continue;
         const nx = Math.max(box[0], Math.min(X, box[0] + w)),
               ny = Math.max(box[1], Math.min(Y, box[1] + h));
@@ -810,6 +1076,7 @@ function urlSync() {
   if (urlApplying) return;
   clearTimeout(urlTimer);
   urlTimer = setTimeout(() => {
+    if (!isFinite(k) || !isFinite(ox) || !isFinite(oy)) return;
     const cx = wx(SW / 2).toFixed(0), cy = wy(SH / 2).toFixed(0);
     const off = FLAGKEYS.filter((f) =>
       (flags[f] ? 0 : 1) !== (DEFAULTS[f] ? 0 : 1));
@@ -826,11 +1093,12 @@ function urlApply() {
     const [a, b] = part.split("=");
     if (a) m[a] = b;
   }
-  if (m.x !== undefined && m.y !== undefined && m.k !== undefined) {
+  const px = parseFloat(m.x), py = parseFloat(m.y), pk = parseFloat(m.k);
+  if (isFinite(px) && isFinite(py) && isFinite(pk)) {
     urlApplying = true;
-    k = Math.max(kmin, Math.min(KMAX, parseFloat(m.k) || k));
-    ox = SW / 2 - parseFloat(m.x) * k;
-    oy = SH / 2 - parseFloat(m.y) * k;
+    k = Math.max(kmin, Math.min(KMAX, pk > 0 ? pk : k));
+    ox = SW / 2 - px * k;
+    oy = SH / 2 - py * k;
     urlApplying = false;
   }
   if (m.t) for (const f of m.t.split("."))
@@ -882,18 +1150,24 @@ function inputInit() {
   const up = (e) => {
     ptrs.delete(e.pointerId);
     if (!ptrs.size) { dragging = false; cv.classList.remove("drag"); }
+    else if (ptrs.size === 1) {                  // pinch -> drag handoff
+      const a = [...ptrs.values()][0]; lx = a[0]; ly = a[1];
+    }
   };
   cv.addEventListener("pointerup", up);
   cv.addEventListener("pointercancel", up);
   cv.addEventListener("wheel", (e) => {
     e.preventDefault();
     const r = cv.getBoundingClientRect();
-    zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0016));
+    const u = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? SH : 1;
+    zoomAt(e.clientX - r.left, e.clientY - r.top,
+           Math.exp(-e.deltaY * u * 0.0016));
   }, { passive: false });
   let downAt = null;
   cv.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY, performance.now()]; });
   cv.addEventListener("pointerup", (e) => {
     if (!downAt) return;
+    if (ptrs.size) { downAt = null; return; }    // still mid-pinch: not a tap
     const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
     if (moved < 5 && performance.now() - downAt[2] < 500) {
       const r = cv.getBoundingClientRect();
@@ -914,14 +1188,24 @@ function inputInit() {
     else if (e.key === "+" || e.key === "=") zoomAt(SW / 2, SH / 2, 1.35);
     else if (e.key === "-") zoomAt(SW / 2, SH / 2, 1 / 1.35);
     else if (e.key === "0") { fit(); LQ = false; schedule(); say("Whole map"); }
+    else if (e.key === "Enter") {
+      tipPinned = false;
+      const b = inspect(SW / 2, SH / 2);
+      if (b) showTip(b, SW / 2, SH / 2, true);
+      else { cardClose(); say("No feature at the map centre"); }
+    }
     else return;
     e.preventDefault();
   });
   document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;   // canvas handler already acted (+/-/0)
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") {
-      if (e.key === "Escape") { closeResults(); $("search").blur(); }
-      return;
-    }
+      if (e.target.id === "search") {
+        if (e.key === "Escape") { closeResults(); $("search").blur(); }
+        return;
+      }
+      if (e.key !== "Escape") return; // Esc falls through: close panels even
+    }                                 // when focus is on a layer checkbox
     if (e.key === "/") { e.preventDefault(); $("search").focus(); }
     else if (e.key.toLowerCase() === "l") togglePanel(true);
     else if (e.key === "?") helpOpen();
@@ -960,8 +1244,14 @@ function inspect(X, Y) {
   let best = null, bd = 14 / k;
   for (const s of S.stations) {
     const d = Math.hypot(s.x - wxp, s.y - wyp);
-    if (d < bd) { bd = d; best = { kind: "Station", name: s.name, x: s.x, y: s.y,
-      rows: [["CRS code", s.crs || "—"], ["Type", s.halt ? "Halt" : "Station"]] }; }
+    if (d < bd) {
+      bd = d;
+      const rows = [["CRS code", s.crs || "—"],
+                    ["Type", s.halt ? "Halt" : "Station"]];
+      if (s.use > 0) rows.push(["Annual usage",
+        s.use >= 1e6 ? (s.use / 1e6).toFixed(1) + " M" : s.use.toLocaleString()]);
+      best = { kind: "Station", name: s.name, x: s.x, y: s.y, rows };
+    }
   }
   if (!best) {
     bd = 12 / k;
@@ -1068,12 +1358,15 @@ function searchInit() {
     ul.innerHTML = "";
     resItems.forEach((e, i) => {
       const li = document.createElement("li");
-      li.role = "option"; li.id = "res" + i;
+      li.setAttribute("role", "option"); li.id = "res" + i;
+      li.setAttribute("aria-selected", "false");
       li.innerHTML = esc(e.n) + "<span class='kind'>" + e.kind + "</span>";
-      li.addEventListener("mousedown", (ev) => { ev.preventDefault(); go(e); });
+      li.addEventListener("mousedown", (ev) => ev.preventDefault());
+      li.addEventListener("click", () => go(e));
       ul.appendChild(li);
     });
     resSel = -1;
+    inp.removeAttribute("aria-activedescendant");
     ul.hidden = !resItems.length;
     inp.setAttribute("aria-expanded", resItems.length ? "true" : "false");
     say(resItems.length ? resItems.length + " results" : "No results");
@@ -1097,6 +1390,7 @@ function searchInit() {
 function closeResults() {
   $("results").hidden = true;
   $("search").setAttribute("aria-expanded", "false");
+  $("search").removeAttribute("aria-activedescendant");
   resItems = []; resSel = -1;
 }
 function go(e) {

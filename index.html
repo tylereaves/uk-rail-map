@@ -23,7 +23,7 @@
     <ul id="results" role="listbox" aria-label="Search results" hidden></ul>
   </div>
 
-  <nav id="controls" aria-label="Map controls">
+  <nav id="controls" tabindex="-1" aria-label="Map controls">
     <button id="zoomin"  class="ctl" aria-label="Zoom in"  title="Zoom in (+)">+</button>
     <button id="zoomout" class="ctl" aria-label="Zoom out" title="Zoom out (&minus;)">&minus;</button>
     <button id="fit"     class="ctl" aria-label="Fit whole map" title="Fit whole map (0)">&#x2302;</button>
@@ -36,7 +36,7 @@
 
 <main id="stage">
   <canvas id="map" role="application" tabindex="0"
-          aria-label="Railway map. Pan with arrow keys or by dragging; zoom with plus and minus or the mouse wheel; press slash to search."></canvas>
+          aria-label="Railway map. Pan with arrow keys or by dragging; zoom with plus and minus or the mouse wheel; press Enter for details of the feature at the centre; press slash to search."></canvas>
 
   <div id="announce" class="vh" role="status" aria-live="polite"></div>
 
@@ -67,6 +67,7 @@
       <tr><th scope="row"><kbd>/</kbd></th><td>search stations &amp; places</td></tr>
       <tr><th scope="row"><kbd>L</kbd></th><td>layers panel</td></tr>
       <tr><th scope="row">Click / tap</th><td>details for the nearest feature</td></tr>
+      <tr><th scope="row"><kbd>Enter</kbd></th><td>details at the map centre (keyboard)</td></tr>
       <tr><th scope="row"><kbd>Esc</kbd></th><td>close panels</td></tr>
     </table>
     <p class="fine">Zoom in for detail: junction names, yard outlines, level crossings and
