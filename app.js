@@ -425,6 +425,13 @@ function place(ax, ay, w, h, cc, must) {
 /* record-and-replay label cache (obs #58): full frames record world-anchored
    text/leader ops; LQ frames replay them re-projected. */
 let LBC = [];
+/* label HIT boxes: hovering a label = hovering its feature (Tyler
+   2026-06-10). World-anchored top-left + screen w/h + an info builder;
+   rebuilt with every full label pass, reprojected at hit-test time. */
+let HITL = [];
+function recHit(x0, y0, w, h, info) {
+  HITL.push({ bx: wx(x0), by: wy(y0), w, h, info });
+}
 function recText(font, fill, halo, text, wxp, wyp, dx, dy, align) {
   LBC.push([0, font, fill, halo, text, wxp, wyp, dx, dy, align || "left"]);
   drawTextOp(font, fill, halo, text, sx(wxp) + dx, sy(wyp) + dy, align);
@@ -681,10 +688,18 @@ function draw() {
         ctx.lineWidth = 0.6 * wsc; ctx.stroke();
       }
       if (yOutlineNow) {
-        if (!yShadeNow) fillRings(f.rings);
-        ctx.globalAlpha = yTrackA;
-        ctx.lineWidth = 0.9 * wsc;
-        ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
+        // Tyler 2026-06-10: the bare dashed outline "just looks like
+        // deformed track". Zoomed-in yards keep a light WASH (the area
+        // reads as a tinted zone) + a wide soft boundary band — a 2.4px
+        // low-alpha tan band can never be mistaken for rail ink.
+        fillRings(f.rings);
+        ctx.fillStyle = P.yard_poly || "#d5cfa6";
+        ctx.globalAlpha = 0.30 * yTrackA; ctx.fill("evenodd");
+        fillRings(f.rings);
+        ctx.strokeStyle = P.yard_poly_edge || "#a89a6e";
+        ctx.globalAlpha = 0.35 * yTrackA;
+        ctx.lineWidth = 2.4 * wsc;
+        ctx.stroke();
       }
       ctx.globalAlpha = 1;
     }
@@ -812,7 +827,7 @@ function schedule() { if (!raf) raf = requestAnimationFrame(draw); }
 
 /* ---------------- labels (HQ frames) ---------------- */
 function drawLabels() {
-  OCC = new Set(); HOCC = new Set(); BOXES = []; LBC = [];
+  OCC = new Set(); HOCC = new Set(); BOXES = []; LBC = []; HITL = [];
   const vx0 = wx(0), vy0 = wy(0), vx1 = wx(SW), vy1 = wy(SH);
   // seed occupancy: visible track ink + crossing bars; HARD: station polys
   for (const i of L.tracks.g.query(vx0, vy0, vx1, vy1)) {
@@ -857,6 +872,8 @@ function drawLabels() {
           const w2 = ynWidth(lay.lines[li], lay.fs);
           const yy = lay.Y + (li - (lay.lines.length - 1) / 2) * YN_LEAD * lay.fs;
           markSeg(lay.X - w2 / 2, yy, lay.X + w2 / 2, yy);
+          recHit(lay.X - w2 / 2, yy - lay.fs * 0.7, w2, lay.fs * 1.4,
+                 () => yardInfo(f));
         }
       } else {                                 // tracks fully on: placer + leader
         const X = sx((f._bb[0] + f._bb[2]) / 2), Y = sy((f._bb[1] + f._bb[3]) / 2);
@@ -871,6 +888,7 @@ function drawLabels() {
           recLeader(ynInk, 0.7, wx(X), wy(Y), 0, 0, wx(nx), wy(ny), 0, 0);
         recYardName(fs, ynInk, P.land || "#f1e9d4",
           [f.name], wx(box[0] + w / 2), wy(box[1] + h / 2));
+        recHit(box[0], box[1], w, h, () => yardInfo(f));
       }
     }
   }
@@ -908,6 +926,7 @@ function drawLabels() {
           wx(X), wy(Y), 0, 0, wx(nx), wy(ny), 0, 0);
         recText(font, P.station_label || "#274b66", P.land || "#f1e9d4",
           s.name, wx(box[0]), wy(box[1]), 0, fs);
+        recHit(box[0], box[1], w, h, () => stationInfo(s));
       }
     }
   }
@@ -947,6 +966,7 @@ function drawLabels() {
       if (!box) continue;
       recText(font, P.label_sub || "#6b6353", P.land || "#f1e9d4",
         p.name, wx(box[0]), wy(box[1]), 0, fs);
+      recHit(box[0], box[1], w, h, () => placeInfo(p));
     }
   }
   // junction names
@@ -965,6 +985,7 @@ function drawLabels() {
         recLeader(P.label_sub || "#6b6353", 0.6, wx(X), wy(Y), 0, 0, wx(nx), wy(ny), 0, 0);
       recText(font, P.label_sub || "#6b6353", P.land || "#f1e9d4",
         jn.name, wx(box[0]), wy(box[1]), 0, fs);
+      recHit(box[0], box[1], w, h, () => junctionInfo(jn));
     }
   }
   // LC labels (k gate raised 0.55→0.95: red LC marks were London noise)
@@ -982,15 +1003,16 @@ function drawLabels() {
       if (!box) continue;
       recText(font, P.red || "#a02818", P.land || "#f1e9d4",
         lab, wx(box[0]), wy(box[1]), 0, h - 2);
+      recHit(box[0], box[1], w, h, () => lcInfo(c));
     }
   }
   // named tunnels / bridges + industry
   const namedPts = [
-    [POINTS.tunnels, P.tunnel || "#7d745f", flags.tunnel],
-    [POINTS.bridges, P.label_sub || "#6b6353", 1],
-    [POINTS.industry, P.label_sub || "#6b6353", flags.industry],
+    [POINTS.tunnels, P.tunnel || "#7d745f", flags.tunnel, "Tunnel"],
+    [POINTS.bridges, P.label_sub || "#6b6353", 1, "Bridge / viaduct"],
+    [POINTS.industry, P.label_sub || "#6b6353", flags.industry, "Industry"],
   ];
-  if (k > 0.55) for (const [arr, col, on] of namedPts) {
+  if (k > 0.55) for (const [arr, col, on, kindName] of namedPts) {
     if (!on) continue;
     for (const f of arr || []) {
       const X = sx(f.x), Y = sy(f.y);
@@ -1006,6 +1028,7 @@ function drawLabels() {
       if (Math.hypot(nx - X, ny - Y) > 11)
         recLeader(P.label_sub || "#6b6353", 0.7, wx(X), wy(Y), 0, 0, wx(nx), wy(ny), 0, 0);
       recText(font, col, P.land || "#f1e9d4", txt, wx(box[0]), wy(box[1]), 0, fs);
+      recHit(box[0], box[1], w, h, () => namedPtInfo(f, kindName));
       if (f.ft) {
         const f2 = "500 " + fs * 0.85 + "px Georgia,serif";
         recText(f2, P.label_sub || "#6b6353", P.land || "#f1e9d4",
@@ -1238,26 +1261,74 @@ const CLSNAME = { rail: "Railway", siding: "Siding", yard: "Yard track",
   construction: "Under construction", branch: "Branch line" };
 const ELNAME = { dc: "DC electrified", ac: "AC electrified (overhead)",
   none: "Not electrified" };
+/* ---- feature info builders (shared by point, polygon and LABEL hits) -- */
+function ptInRings(x, y, rings) {              // even-odd crossing number
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const yi = ring[i][1], yj = ring[j][1];
+      if ((yi <= y) !== (yj <= y)) {
+        const xi = ring[i][0], xj = ring[j][0];
+        if (x < xi + (y - yi) / (yj - yi) * (xj - xi)) inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+function stationInfo(s) {
+  const rows = [["CRS code", s.crs || "—"],
+                ["Type", s.halt ? "Halt" : "Station"]];
+  if (s.use > 0) rows.push(["Annual usage",
+    s.use >= 1e6 ? (s.use / 1e6).toFixed(1) + " M" : s.use.toLocaleString()]);
+  return { kind: "Station", name: s.name, x: s.x, y: s.y, rows };
+}
+function junctionInfo(jn) {
+  return { kind: "Junction", name: jn.name, x: jn.x, y: jn.y, rows: [] };
+}
+function lcInfo(c) {
+  return { kind: "Level crossing", name: c.name || "Level crossing",
+    x: c.x, y: c.y, rows: c.barrier ? [["Barrier", c.barrier]] : [] };
+}
+function yardInfo(f) {
+  return { kind: "Yard", name: f.name || "Yard", rows: [] };
+}
+function placeInfo(p) {
+  const rows = [];
+  if (p.pop) rows.push(["Population", p.pop.toLocaleString()]);
+  return { kind: p.rank >= 4 ? "City" : p.rank >= 2 ? "Town" : "Village",
+    name: p.name, x: p.x, y: p.y, rows };
+}
+function namedPtInfo(f, kind) {
+  const rows = [];
+  if (f.ft) rows.push(["Length", f.ft.toLocaleString() + " ft"]);
+  return { kind, name: f.name, x: f.x, y: f.y, rows };
+}
+function stationByName(name) {
+  let best = null;
+  for (const s of S.stations) if (s.name === name) { best = s; break; }
+  return best;
+}
 function inspect(X, Y) {
   const wxp = wx(X), wyp = wy(Y);
-  // stations first (generous radius)
+  // LABELS first: a label IS its feature (Tyler 2026-06-10). HITL boxes
+  // are recorded world-anchored at placement and reprojected here, so
+  // they stay valid through pans between full frames.
+  for (const e of HITL) {
+    const lx = sx(e.bx), ly = sy(e.by);
+    if (X >= lx && X <= lx + e.w && Y >= ly && Y <= ly + e.h)
+      return e.info();
+  }
+  // stations by point (generous radius)
   let best = null, bd = 14 / k;
   for (const s of S.stations) {
     const d = Math.hypot(s.x - wxp, s.y - wyp);
-    if (d < bd) {
-      bd = d;
-      const rows = [["CRS code", s.crs || "—"],
-                    ["Type", s.halt ? "Halt" : "Station"]];
-      if (s.use > 0) rows.push(["Annual usage",
-        s.use >= 1e6 ? (s.use / 1e6).toFixed(1) + " M" : s.use.toLocaleString()]);
-      best = { kind: "Station", name: s.name, x: s.x, y: s.y, rows };
-    }
+    if (d < bd) { bd = d; best = stationInfo(s); }
   }
   if (!best) {
     bd = 12 / k;
     for (const jn of POINTS.junctions || []) {
       const d = Math.hypot(jn.x - wxp, jn.y - wyp);
-      if (d < bd) { bd = d; best = { kind: "Junction", name: jn.name, x: jn.x, y: jn.y, rows: [] }; }
+      if (d < bd) { bd = d; best = junctionInfo(jn); }
     }
   }
   if (!best) {
@@ -1265,16 +1336,27 @@ function inspect(X, Y) {
     for (const c of POINTS.crossings || []) {
       if (c.x == null) continue;
       const d = Math.hypot(c.x - wxp, c.y - wyp);
-      if (d < bd) { bd = d; best = { kind: "Level crossing",
-        name: c.name || "Level crossing", x: c.x, y: c.y,
-        rows: c.barrier ? [["Barrier", c.barrier]] : [] }; }
+      if (d < bd) { bd = d; best = lcInfo(c); }
     }
   }
+  // station footprint polygon = the station itself
+  if (!best && flags.plat) {
+    for (const i of L.station_polys.g.query(wxp, wyp, wxp, wyp)) {
+      const f = L.station_polys.arr[i];
+      if (ptInRings(wxp, wyp, f.rings)) {
+        const s = f.name && stationByName(f.name);
+        best = s ? stationInfo(s)
+                 : { kind: "Station", name: f.name || "Station", rows: [] };
+        break;
+      }
+    }
+  }
+  // yard footprint polygon = the yard (true interior, not bbox)
   if (!best && (yShadeNow || yOutlineNow)) {
     for (const i of L.yard_polys.g.query(wxp, wyp, wxp, wyp)) {
       const f = L.yard_polys.arr[i];
-      if (wxp >= f._bb[0] && wxp <= f._bb[2] && wyp >= f._bb[1] && wyp <= f._bb[3] && f.name) {
-        best = { kind: "Yard", name: f.name, rows: [] };
+      if (f.name && ptInRings(wxp, wyp, f.rings)) {
+        best = yardInfo(f);
         break;
       }
     }
