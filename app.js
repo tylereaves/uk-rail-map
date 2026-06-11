@@ -1397,6 +1397,22 @@ function inspect(X, Y) {
         name: bt.name || (CLSNAME[bt.cls] || "Railway"), rows };
     }
   }
+  // former (ghost) lines — live ink wins, so only when nothing else hit
+  if (!best && flags.former && L.former) {
+    bd = 12 / k;
+    let bf = null;
+    for (const i of L.former.g.query(wxp - bd, wyp - bd, wxp + bd, wyp + bd)) {
+      const f = L.former.arr[i];
+      for (let j = 0; j + 1 < f.pts.length; j++) {
+        const d = segDist(wxp, wyp, f.pts[j][0], f.pts[j][1], f.pts[j + 1][0], f.pts[j + 1][1]);
+        if (d < bd) { bd = d; bf = f; }
+      }
+    }
+    if (bf) {
+      const rows = [["Status", bf.sub || "closed"]];
+      best = { kind: "Former railway", name: bf.name || "Former railway", rows };
+    }
+  }
   return best;
 }
 let tipPinned = false;
