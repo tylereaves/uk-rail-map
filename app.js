@@ -1428,37 +1428,110 @@ function cardClose() { $("card").hidden = true; tipPinned = false; }
 const esc = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-/* ---------------- search ---------------- */
-let IDX = [], resSel = -1, resItems = [];
+/* ---------------- search ----------------
+   The built-in index covers what overview.json carries (stations+places);
+   the first keystroke lazily fetches search_index.json -- EVERY labelled
+   feature map-wide (junctions, yards, industry, tunnels, bridges, named
+   level crossings, places rank>=2) -- and swaps it in. file:// or a 404
+   keeps the built-in index silently. Matching is fuzzy: see scoreEntry. */
+let IDX = [], resSel = -1, resItems = [], fullIdx = 0, searchRerun = null;
+const ZK = { station: 2.2, halt: 2.2, junction: 2.8, yard: 2.4, industry: 2.0,
+  crossing: 3.0, tunnel: 2.4, bridge: 2.4, place: 0.8 };
+const KPRI = { station: 0, halt: 0, junction: 1, place: 2, yard: 3,
+  industry: 4, tunnel: 5, bridge: 5, crossing: 6 };
+const KLAB = { crossing: "level crossing" };
+function norm(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function prepEntry(e) {
+  const k = e.h ? "halt" : e.k;
+  return { n: e.n, k: k, kind: KLAB[k] || k, l: norm(e.n),
+    x: e.x, y: e.y, u: e.u || e.p || 0, zk: ZK[k] || 1.6, s: 0 };
+}
+function subseq(q, t) {
+  let j = 0;
+  for (let i = 0; i < t.length && j < q.length; i++)
+    if (t[i] === q[j]) j++;
+  return j === q.length;
+}
+function near1At(q, t, p) {
+  // does q match t.slice(p) as a prefix with at most ONE edit
+  // (substitution, transposition, insertion or deletion)?
+  let i = 0;
+  while (i < q.length && p + i < t.length && q[i] === t[p + i]) i++;
+  if (i >= q.length) return true;
+  const r1 = q.slice(i + 1);
+  if (t.substr(p + i + 1, r1.length) === r1) return true;            // subst
+  if (q[i] === t[p + i + 1] && q[i + 1] === t[p + i] &&
+      t.substr(p + i + 2, q.length - i - 2) === q.slice(i + 2))
+    return true;                                                     // transp
+  const r0 = q.slice(i);
+  if (t.substr(p + i + 1, r0.length) === r0) return true;  // q missing a char
+  if (t.substr(p + i, r1.length) === r1) return true;      // q has extra char
+  return false;
+}
+function scoreEntry(e, q) {
+  const l = e.l;
+  if (l === q) return 100;
+  if (l.lastIndexOf(q, 0) === 0) return 90;            // prefix
+  if (l.indexOf(" " + q) >= 0) return 80;              // a word starts with q
+  if (l.indexOf(q) >= 0) return 65;                    // substring
+  if (q.length >= 3) {
+    if (subseq(q, l)) return 50;                       // chars in order
+    if (near1At(q, l, 0)) return 40;                   // one typo, word start
+    for (let i = l.indexOf(" "); i >= 0; i = l.indexOf(" ", i + 1))
+      if (near1At(q, l, i + 1)) return 40;
+  }
+  return 0;
+}
+function cmpEntries(a, b) {
+  // prefix (90) and word-boundary prefix (80) share ONE rank band: London
+  // termini all have a zero-usage metro twin under the bare name ("Liverpool
+  // Street" vs "London Liverpool Street" 104M), and the twin's bare-name
+  // prefix must not pin it above the terminus. Usage sorts within the band;
+  // raw score still breaks exact ties.
+  const ba = a.s === 90 ? 80 : a.s, bb = b.s === 90 ? 80 : b.s;
+  return (bb - ba) || (KPRI[a.k] - KPRI[b.k]) || (b.u - a.u) ||
+    (b.s - a.s) || (a.n.length - b.n.length) ||
+    (a.n < b.n ? -1 : a.n > b.n ? 1 : 0);
+}
 function buildIndex() {
   IDX = [];
   for (const s of S.stations)
-    IDX.push({ n: s.name, l: s.name.toLowerCase(), kind: s.halt ? "halt" : "station",
-      x: s.x, y: s.y, zk: 2.2 });
+    IDX.push(prepEntry({ n: s.name, k: "station", h: s.halt ? 1 : 0,
+      x: s.x, y: s.y, u: s.use || 0 }));
   for (const p of S.places)
-    IDX.push({ n: p.name, l: p.name.toLowerCase(), kind: "place",
-      x: p.x, y: p.y, zk: 0.8 });
+    IDX.push(prepEntry({ n: p.name, k: "place", x: p.x, y: p.y, p: p.pop }));
+}
+function fullIndexLoad() {
+  if (fullIdx) return;
+  fullIdx = 1;
+  fetch("search_index.json")
+    .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then((arr) => {
+      IDX = arr.map(prepEntry); fullIdx = 2;
+      if (searchRerun && document.activeElement === $("search")) searchRerun();
+    })
+    .catch(() => { fullIdx = 3; });    // file:// or 404 -> keep built-in
 }
 function searchInit() {
   const inp = $("search"), ul = $("results");
-  inp.addEventListener("input", () => {
-    const q = inp.value.trim().toLowerCase();
+  function runSearch() {
+    const q = norm(inp.value);
     if (q.length < 2) { closeResults(); return; }
-    const starts = [], contains = [];
+    const hits = [];
     for (const e of IDX) {
-      const i = e.l.indexOf(q);
-      if (i === 0) starts.push(e);
-      else if (i > 0) contains.push(e);
-      if (starts.length > 40) break;
+      const sc = scoreEntry(e, q);
+      if (sc > 0) { e.s = sc; hits.push(e); }
     }
-    starts.sort((a, b) => a.n.length - b.n.length);   // exact match first
-    resItems = starts.concat(contains).slice(0, 12);
+    hits.sort(cmpEntries);
+    resItems = hits.slice(0, 12);
     ul.innerHTML = "";
     resItems.forEach((e, i) => {
       const li = document.createElement("li");
       li.setAttribute("role", "option"); li.id = "res" + i;
       li.setAttribute("aria-selected", "false");
-      li.innerHTML = esc(e.n) + "<span class='kind'>" + e.kind + "</span>";
+      li.innerHTML = esc(e.n) + "<span class='kind'>" + esc(e.kind) + "</span>";
       li.addEventListener("mousedown", (ev) => ev.preventDefault());
       li.addEventListener("click", () => go(e));
       ul.appendChild(li);
@@ -1468,7 +1541,9 @@ function searchInit() {
     ul.hidden = !resItems.length;
     inp.setAttribute("aria-expanded", resItems.length ? "true" : "false");
     say(resItems.length ? resItems.length + " results" : "No results");
-  });
+  }
+  searchRerun = runSearch;
+  inp.addEventListener("input", () => { fullIndexLoad(); runSearch(); });
   inp.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") { resSel = Math.min(resItems.length - 1, resSel + 1); mark(); e.preventDefault(); }
     else if (e.key === "ArrowUp") { resSel = Math.max(0, resSel - 1); mark(); e.preventDefault(); }
