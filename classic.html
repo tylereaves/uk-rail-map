@@ -516,7 +516,7 @@ function drawLabels(){
   // Constants are SHARED with the new viewer (orr_usage/SPEC.md) -- change
   // them in BOTH places or the two viewers disagree about which labels show.
   const USE_DEFAULT=100000;                // use==0/missing: LU, Ireland, heritage
-  const USE_BANDS=[[0.55,10000000],[0.85,2000000],[1.3,250000]];  // [kBelow,minUse]
+  const USE_BANDS=[[0.55,10000000],[0.95,2000000],[1.35,250000]];  // [kBelow,minUse]
   const MUST_K=1.6;                        // below this, best-effort may drop
   const useOf=s=>(s.use>0?s.use:USE_DEFAULT);
   const useShow=s=>{const u=useOf(s);for(const[kb,mu] of USE_BANDS)if(k<kb)return u>=mu;return true;};
