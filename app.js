@@ -39,6 +39,13 @@ let k = 0.1, ox = 0, oy = 0;  // world->screen: sx = x*k + ox
 let kmin = 0.01, KMAX = 14;
 let LQ = false, lqTimer = 0;  // interaction fast-path flag
 let raf = 0;
+
+/* ---- analytics: anonymous feature-usage counters (no-op if GA absent/blocked) ---- */
+const _gaOnce = {};
+function track(name, params, once) {
+  if (once) { if (_gaOnce[name]) return; _gaOnce[name] = 1; }
+  try { if (typeof gtag === "function") gtag("event", name, params || {}); } catch (e) {}
+}
 let _unused_sel = null;
 let flightId = 0;
 
@@ -747,7 +754,9 @@ function draw() {
     for (const i of LOVT.g.query(vx0, vy0, vx1, vy1)) {
       const t = LOVT.arr[i];
       if (!visible(t._bb) || !flagOf(t)) continue;
-      ctx.lineWidth = (WID[t.cls] !== undefined ? WID[t.cls] : 1.0) * wsc;
+      const ow = (WID[t.cls] !== undefined ? WID[t.cls] : 1.0) * wsc;
+      // FIXPACK-IOM: same narrow-gauge stroke clamp as the detail pass
+      ctx.lineWidth = t.cls === "narrow_gauge" ? Math.min(ow, 1.6) : ow;
       ctx.strokeStyle = clsInk(t);
       ctx.beginPath(); pathStraight(t.pts); ctx.stroke();
     }
@@ -761,15 +770,21 @@ function draw() {
                       (ORD[b.cls] !== undefined ? ORD[b.cls] : 5));
     ctx.lineCap = "round"; ctx.lineJoin = "round";
     for (const t of tt) {
-      const w = (WID[t.cls] !== undefined ? WID[t.cls] : 1.0) *
-                (t.br ? 0.84 : 1) * wsc;
-      ctx.lineWidth = w;
-      ctx.strokeStyle = clsInk(t);
+      let w = (WID[t.cls] !== undefined ? WID[t.cls] : 1.0) *
+              (t.br ? 0.84 : 1) * wsc;
       let dash = null, alpha = 1;
-      if (t.cls === "narrow_gauge") dash = [6 * wsc, 1.5 * wsc];
-      else if (t.cls === "construction") { dash = [3 * wsc, 3 * wsc]; alpha = 0.45; }
+      if (t.cls === "narrow_gauge") {
+        // FIXPACK-IOM: clamp the zoomed narrow-gauge stroke (raw WID*wsc
+        // tops out at ~3 px and the 6/1.5 dash read as tar streaks at
+        // Laxey); the dash scales with the CLAMPED width, not raw wsc.
+        w = Math.min(w, 1.6);
+        const ngs = w / WID.narrow_gauge;
+        dash = [6 * ngs, 1.5 * ngs];
+      } else if (t.cls === "construction") { dash = [3 * wsc, 3 * wsc]; alpha = 0.45; }
       else if (t.cls === "tunnel") dash = [3.2 * wsc, 2.4 * wsc];
       if (t.cls === "yard") alpha *= yTrackA;   // fade in across the band
+      ctx.lineWidth = w;
+      ctx.strokeStyle = clsInk(t);
       if (dash) ctx.setLineDash(dash);
       ctx.globalAlpha = alpha;
       // tunnel runs inside a normal track dash in the SAME ink
@@ -1069,6 +1084,7 @@ function zoomAt(X, Y, f) {
 function interact() {
   LQ = true; clearTimeout(lqTimer);
   lqTimer = setTimeout(() => { LQ = false; schedule(); }, 140);
+  if (k >= 2.2) track("zoom_detail", null, true);   // reached detail-tile zoom
 }
 function flyTo(x, y, tk, label) {
   flightId++;
@@ -1406,7 +1422,7 @@ function showTip(best, X, Y, pin) {
   if (ly + h > SH - 8) ly = Y - h - 12;
   card.style.left = Math.max(6, lx) + "px";
   card.style.top = Math.max(6, ly) + "px";
-  if (pin) say(best.kind + ": " + best.name);
+  if (pin) { track("inspect", { kind: best.kind }); say(best.kind + ": " + best.name); }
 }
 function cardClose() { $("card").hidden = true; tipPinned = false; }
 const esc = (s) => String(s).replace(/[&<>"]/g,
@@ -1479,6 +1495,7 @@ function go(e) {
   if (!e) return;
   closeResults();
   $("search").value = e.n;
+  track("search_go", { term: e.n, kind: e.kind });
   flyTo(e.x, e.y, e.zk, e.n);
 }
 
@@ -1527,7 +1544,7 @@ function panelInit() {
       const tx = document.createElement("span"); tx.textContent = lab;
       row.append(rb, tx); fs.appendChild(row);
       rb.addEventListener("change", () => {
-        if (rb.checked) { yardMode = val; LQ = false; schedule(); say("Yards: " + lab); }
+        if (rb.checked) { yardMode = val; LQ = false; schedule(); track("yard_mode", { mode: val }); say("Yards: " + lab); }
       });
     }
     host.appendChild(fs);
@@ -1547,6 +1564,7 @@ function panelInit() {
       row.append(cb, sw, tx); host.appendChild(row);
       cb.addEventListener("change", () => {
         flags[key] = cb.checked ? 1 : 0; LQ = false; schedule();
+        track("layer_toggle", { layer: key, on: cb.checked ? 1 : 0 });
         say(lab + (cb.checked ? " shown" : " hidden"));
       });
     }
@@ -1620,6 +1638,8 @@ fetch("overview.json")
     if (BM) CACHE_MAX = BM.cache_tiles || 60;
     document.title = "Railway Map — Great Britain & Ireland";
     resize(); fit(); urlApply(); useOverview();
+    if (location.hash.length > 1)
+      track("deeplink", { keys: location.hash.slice(1).split("&").map((s) => s.split("=")[0]).sort().join(",") });
     if (S.sea) { for (const q of S.sea.polys) bboxOf(q); }
     buildIndex(); searchInit(); panelInit(); legendInit(); inputInit();
     $("loading").hidden = true;
