@@ -879,7 +879,7 @@ function drawLabels() {
   // zoom-banded eligibility unclutters London; must-place only when close.
   if (flags.stn && k > 0.42) {
     const USE_DEFAULT = 100000;
-    const USE_BANDS = [[0.55, 10000000], [0.85, 2000000], [1.3, 250000]];
+    const USE_BANDS = [[0.55, 10000000], [0.95, 2000000], [1.35, 250000]];
     const MUST_K = 1.6;
     const useOf = (s) => (s.use > 0 ? s.use : USE_DEFAULT);
     const useShow = (s) => {
@@ -967,8 +967,8 @@ function drawLabels() {
         jn.name, wx(box[0]), wy(box[1]), 0, fs);
     }
   }
-  // LC labels
-  if (flags.lc && k > 0.55) {
+  // LC labels (k gate raised 0.55→0.95: red LC marks were London noise)
+  if (flags.lc && k > 0.95) {
     for (const c of POINTS.crossings || []) {
       if (c.x == null) continue;
       const X = sx(c.x), Y = sy(c.y);
