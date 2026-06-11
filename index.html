@@ -1,96 +1,14 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>UK &amp; Ireland Railway Map</title>
-<meta name="description" content="Interactive map of every railway in Great Britain and Ireland — electrification, stations, junctions, yards, tunnels and former lines, from OpenStreetMap data.">
-<meta name="color-scheme" content="light">
-<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-Q1S92GX2BQ"></script>
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Railway Map</title>
+<meta name="robots" content="noindex">
 <script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-  gtag('config', 'G-Q1S92GX2BQ');
+/* land on the default region, PRESERVING the #deep-link hash so old
+   root-level bookmarks (/#x=..&y=..&k=..) keep working */
+location.replace("./uk/" + location.hash);
 </script>
-<link rel="stylesheet" href="style.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23f1e9d4'/%3E%3Cpath d='M2 12 14 4' stroke='%232e2a22' stroke-width='2'/%3E%3Cpath d='M2 8 14 8' stroke='%239d3a25' stroke-width='2'/%3E%3C/svg%3E">
-</head>
-<body>
-<a class="skip" href="#controls">Skip to map controls</a>
-
-<header id="topbar">
-  <h1 id="title">Railway&nbsp;Map <span id="subtitle">Great Britain &amp; Ireland</span></h1>
-
-  <div id="searchwrap" role="search">
-    <label class="vh" for="search">Search stations and places</label>
-    <input id="search" type="text" role="combobox" aria-expanded="false"
-           aria-controls="results" aria-autocomplete="list" autocomplete="off"
-           spellcheck="false" placeholder="Search stations &amp; places&hellip; ( / )">
-    <ul id="results" role="listbox" aria-label="Search results" hidden></ul>
-  </div>
-
-  <nav id="controls" tabindex="-1" aria-label="Map controls">
-    <button id="zoomin"  class="ctl" aria-label="Zoom in"  title="Zoom in (+)">+</button>
-    <button id="zoomout" class="ctl" aria-label="Zoom out" title="Zoom out (&minus;)">&minus;</button>
-    <button id="fit"     class="ctl" aria-label="Fit whole map" title="Fit whole map (0)">&#x2302;</button>
-    <button id="layersbtn" class="ctl wide" aria-expanded="false" aria-controls="layers"
-            title="Layers (L)">Layers</button>
-    <button id="helpbtn" class="ctl" aria-label="Help and about" aria-expanded="false"
-            aria-controls="help" title="Help (?)">?</button>
-  </nav>
-</header>
-
-<main id="stage">
-  <canvas id="map" role="application" tabindex="0"
-          aria-label="Railway map. Pan with arrow keys or by dragging; zoom with plus and minus or the mouse wheel; press Enter for details of the feature at the centre; press slash to search."></canvas>
-
-  <div id="announce" class="vh" role="status" aria-live="polite"></div>
-
-  <aside id="layers" aria-label="Map layers" hidden>
-    <h2>Layers</h2>
-    <div id="layergroups"></div>
-    <button id="layersclose" class="ctl">Close</button>
-  </aside>
-
-  <div id="card" role="dialog" aria-label="Feature details" hidden>
-    <button id="cardclose" class="ctl" aria-label="Close details">&times;</button>
-    <div id="cardbody"></div>
-  </div>
-
-  <dialog id="help" aria-label="Help and about">
-    <h2>About this map</h2>
-    <p>Every railway in Great Britain and Ireland, drawn from
-       <a href="https://www.openstreetmap.org/copyright" rel="external">OpenStreetMap</a> data.
-       The geometry is gently <em>schematised</em>: parallel tracks are spread apart so each
-       line can be seen, while the routes stay true to the landscape.</p>
-    <h3>Reading the map</h3>
-    <ul id="helplegend"></ul>
-    <h3>Getting around</h3>
-    <table class="keys">
-      <tr><th scope="row">Drag / arrow keys</th><td>pan the map</td></tr>
-      <tr><th scope="row">Scroll / pinch / <kbd>+</kbd> <kbd>&minus;</kbd></th><td>zoom</td></tr>
-      <tr><th scope="row"><kbd>0</kbd></th><td>fit the whole map</td></tr>
-      <tr><th scope="row"><kbd>/</kbd></th><td>search stations &amp; places</td></tr>
-      <tr><th scope="row"><kbd>L</kbd></th><td>layers panel</td></tr>
-      <tr><th scope="row">Click / tap</th><td>details for the nearest feature</td></tr>
-      <tr><th scope="row"><kbd>Enter</kbd></th><td>details at the map centre (keyboard)</td></tr>
-      <tr><th scope="row"><kbd>Esc</kbd></th><td>close panels</td></tr>
-    </table>
-    <p class="fine">Zoom in for detail: junction names, yard outlines, level crossings and
-       former (closed) lines appear as you approach. The address bar tracks your view, so any
-       view can be bookmarked or shared.</p>
-    <p class="fine">Map data &copy; OpenStreetMap contributors (ODbL). Built as a static
-       site &mdash; no server. <a id="classiclink" href="classic.html">Classic viewer</a>.</p>
-    <button id="helpclose" class="ctl">Close</button>
-  </dialog>
-
-  <div id="legendbar" aria-hidden="true"></div>
-  <div id="scalebar" aria-hidden="true"><span id="scalelabel"></span><div id="scalerule"></div></div>
-  <div id="loading" role="status">Loading map&hellip;</div>
-</main>
-
-<script src="app.js"></script>
-</body>
-</html>
+<noscript><meta http-equiv="refresh" content="0; url=./uk/"></noscript>
+</head><body>
+<p>Redirecting to the <a href="./uk/">railway map</a>&hellip;</p>
+<p>Regions: <a href="./uk/">Great Britain &amp; Ireland</a> &middot; <a href="./au/">Australia</a></p>
+</body></html>

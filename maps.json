@@ -1,0 +1,17 @@
+{
+ "default": "uk",
+ "maps": [
+  {
+   "id": "uk",
+   "name": "Great Britain & Ireland",
+   "title": "Railway Map",
+   "sub": "Great Britain & Ireland"
+  },
+  {
+   "id": "au",
+   "name": "Australia",
+   "title": "Railway Map",
+   "sub": "Australia"
+  }
+ ]
+}
